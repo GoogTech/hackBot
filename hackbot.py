@@ -6,7 +6,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.tools import ShellTool
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from typing import Final, Union, Literal, List, Dict
 from dotenv import load_dotenv
@@ -58,7 +58,9 @@ class AgentState(TypedDict):
     tasks: Annotated[list, "the generated task list according to the Human Message"]
     tools_name: Annotated[list, "the name of each hack tool will be used according to the corresponding task"]
     commands: Annotated[list, "each command will be generated based on the corresponding task"]
-    command_results: Annotated[Dict[str, str], "each result of every executed command"]
+    command_results: Annotated[Dict[str, str], "the result of every executed command"]
+    summary: Annotated[str, "summarize the command execution results"]
+    failure_flag: Annotated[bool, "whether command execution failures exist; the default value is False"]
     pass
 
 class PlannerOuputSchema(TypedDict):
@@ -67,74 +69,105 @@ class PlannerOuputSchema(TypedDict):
     pass
 
 class ExecutorOutputSchema(TypedDict):
-    # message: Annotated[str, "the thought process"]
     tools_name: Annotated[list, "the name of each hack tool will be used according to the corresponding task"]
     commands: Annotated[list, "each command will be generated based on the corresponding task"]
     # command_result: Annotated[list, "the result of each executed command"]
     pass
 
-# class ToolsOuputSchema(TypedDict):
-#     command_results: Annotated[Dict[str, str], "each result of every executed command"]
-
 class SummarizerOutputSchema(TypedDict):
-    fail_solution: Annotated[str, "the solution for the failures"]
+    summary: Annotated[str, "summarize the command execution results concisely, \
+    and give the the solution for command execution failures if they occur"]
+    failure_flag: Annotated[bool, "whether command execution failures exist; the default value is False"]
 
 class Agent():
     def planner(state: AgentState) -> Command[Literal["executor", "reporter"]]:
-        PLANNER_SYSTEM_PROMPT: Final = SystemMessage(content="""
+        if "summary" not in state:
+            PLANNER_SYSTEM_PROMPT: Final = SystemMessage(content="""
+            You are a planner in penetration testing processes,
+            Your duty is generate precise and concise task list according to the Human Message
+            if the Huamn Message included the information that required you to hack, else just reponse: 
+            "Sorry, I am a planner agent and only respond to hack requirements".
+
+            Notes: 
+            1.Please include the series number in the task header.
+            2.Please try to finish as soon as possible by using the quickest way.
+            3.Do not generate tasks that cannot be translated into attack commands, 
+            For example, documenting the findings and preparing a report.
+            """
+            )
+            user_input_message = HumanMessage(content=str(state["user_input"]))
+            messages = [PLANNER_SYSTEM_PROMPT, user_input_message]
+            llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=PlannerOuputSchema)
+            response = llm_with_tools.invoke(messages)
+            print(f"\nplanner ---> {response}")
+            if tasks := response['tasks']:
+                return Command(
+                    goto="executor", 
+                    update={
+                        "tasks": tasks,
+                        "messages": [AIMessage(content=f"go to executor agent")]
+                    },
+                )
+            return Command(goto=END)
+        ###############
+        # Testing now #
+        ###############
+        PLANNER_SYSTEM_PROMPT: Final = SystemMessage(content=f"""
         You are a planner in penetration testing processes,
-        Your duty is generate precise and concise task list according to the Human Message
-        if the Huamn Message included the information that required you to hack, else just reponse: 
-        "Sorry, I am a planner agent and only respond to hack requirements".
-        
+        Your duty is generate precise and concise task list according to the SummarizerAgent's Messages
+        if the SummarizerAgent's Messages included the failure information that required you to solve, 
+        else just goto the ReporterAgent.
+
+        The SummarizerAgent's Messages: {state["summary"]}
+
         Notes: 
         1.Please include the series number in the task header.
         2.Please try to finish as soon as possible by using the quickest way.
-        3.Do not generate tasks that cannot be translated into attack commands, 
-          For example, documenting the findings and preparing a report.
+        3.Do not generate tasks that cannot be translated into the commands.
         """
         )
-        user_input_message = HumanMessage(content=str(state["user_input"]))
-        messages = [PLANNER_SYSTEM_PROMPT, user_input_message]
+        messages = [PLANNER_SYSTEM_PROMPT]
         llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=PlannerOuputSchema)
         response = llm_with_tools.invoke(messages)
         print(f"\nplanner ---> {response}")
         if tasks := response['tasks']:
             return Command(
-                goto="executor", 
+                goto="executor",
                 update={
                     "tasks": tasks,
                     "messages": [AIMessage(content=f"go to executor agent")]
                 },
             )
         return Command(goto=END)
-    
-    def executor(state: AgentState) -> Command[Literal["tools", "summarizer"]]:
+
+    # def executor(state: AgentState) -> Command[Literal["tools", "summarizer"]]:
+    def executor(state: AgentState) -> Command[Literal["human_reviewer", "summarizer"]]:
         EXECUTOR_SYSTEM_PROMPT: Final = SystemMessage(content=f"""
         You are a executor in penetration testing processes,
         Your duty is to generate each attack command based on every task in the task list,
         Of course, the prerequisite is that the task can generate the attack command.
 
-        The task list: {state['tasks']}        
+        The task list: {state['tasks']}
         """
         )
-        if "command_results" not in state:
+        if ("command_results" not in state) or (state["failure_flag"] is True):
             messages = [EXECUTOR_SYSTEM_PROMPT]
             llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=ExecutorOutputSchema)
             response = llm_with_tools.invoke(messages)
             print(f"\nexecutor ---> {response}")
             return Command(
-                goto="tools",
+                # goto="tools",
+                goto="human_reviewer",
                 update={
                     "tools_name": response["tools_name"],
                     "commands": response["commands"],
-                    "messages": [AIMessage(content=f"go to tools")]
+                    # "messages": [AIMessage(content=f"go to tools")]
+                    "messages": [AIMessage(content=f"go to human_reviewer")]
                 },
             )
         return Command(
             goto="summarizer",
             update={
-                # "command_results": state["command_results"],
                 "messages": [AIMessage(content=f"go to summarizer")]
             }
         )
@@ -159,14 +192,13 @@ class Agent():
             selected_tool = tool_call["name"].lower()
             print(f"selected_tool ---> {selected_tool}")
             selected_tool_obj = tools_dict[selected_tool]
-            selected_tool_response = selected_tool_obj.invoke(tool_call)
+            selected_tool_response = selected_tool_obj.invoke(tool_call) # Execute the command
             messages.append(selected_tool_response)
             print(f"selected_tool_response ---> {selected_tool_response}")
 
         return Command(
             goto="executor",
             update={
-                    # "command_results": response["command_results"],
                     "command_results": messages,
                     "messages": [AIMessage(content=f"go to executor")]
             },
@@ -175,8 +207,8 @@ class Agent():
     def summarizer(state: AgentState) -> Command[Literal["planner"]]:
         SUMMARIZER_SYSTEM_PROMPT: Final = SystemMessage(content=f"""
         You are a summarizer for command execution results in penetration testing processes,
-        Your duty is summarize the command execution results concisely, 
-        and if the command execution process fails, please provide the solution.
+        Your duty is summarize the command execution results concisely and provide the solution
+        if someone command execution process fails.
 
         The command execution results: {state["command_results"]}
         """
@@ -187,6 +219,10 @@ class Agent():
         print(f"\nsummarizer ---> {response}")
         return Command(
             goto="planner",
+            update={
+                "summary": response["summary"],
+                "failure_flag": response["failure_flag"]
+            }
         )
 
     def reporter(state: AgentState) -> Command[Literal[END]]:
@@ -194,12 +230,23 @@ class Agent():
             goto=END
         )
 
+    def human_reviewer(state: AgentState) -> Command[Literal["executor", "tools"]]:
+        while True:
+            print(f"\nhuman_reviewer ---> commands: {state["commands"]}")
+            user_input = input("human_reviewer ---> ensure to execute these commands as below: ")
+            if user_input in ["yes", "continue"]:
+                return Command(goto="tools")
+            elif user_input in ["no", "cancel"]:
+                # TODO: it needs to go back to the executorAgent instead of END
+                return Command(goto=END)
+
 graph_builder = StateGraph(state_schema=AgentState)
 graph_builder.add_node(node="planner", action=Agent.planner)
 graph_builder.add_node(node="executor", action=Agent.executor)
 graph_builder.add_node(node="summarizer", action=Agent.summarizer)
 graph_builder.add_node(node="tools", action=Agent.tools)
 graph_builder.add_node(node="reporter", action=Agent.reporter)
+graph_builder.add_node(node="human_reviewer", action=Agent.human_reviewer)
 # tools_node = ToolNode(tools=tools)
 # graph_builder.add_node(node="tools", action=tools_node)
 graph_builder.add_edge(start_key=START, end_key="planner")
@@ -223,13 +270,16 @@ class Test():
 
     @staticmethod
     def _stream_graph_updates(user_input: str) -> None:
-        user_input = {"user_input": [{"role": "user", "content": user_input}]}
+        user_input = {
+            "user_input": [{"role": "user", "content": user_input}], 
+            "failure_flag": False
+        }
         for event in graph.stream(input=user_input):
             for value in event.values():
                 # print("Assistant: ", value["messages"][-1].content)
                 # print("Assistant: ", value)
                 pass
-
+    
     @staticmethod
     def chat() -> None:
         while True:
