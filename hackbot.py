@@ -8,6 +8,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command, interrupt
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+# from langchain_core.tools import tool
 from typing import Final, Union, Literal, List, Dict
 from dotenv import load_dotenv
 from IPython.display import Image, display
@@ -28,15 +29,17 @@ warnings.filterwarnings(
 load_dotenv()
 os.environ["TAVILY_API_KEY"] = os.getenv("TAVILY_API_KEY")
 
-def web_reasearch() -> TavilySearchResults:
+def web_search() -> TavilySearchResults:
+    """Tool for web search"""
     web_search_tool = TavilySearchResults(max_results=2)
     return web_search_tool
 
 def shell_executor() -> ShellTool:
+    """Tool to run shell commands"""
     shell_tool = ShellTool()
     return shell_tool
 
-tools: List = [web_reasearch(), shell_executor()]
+tools: List = [web_search(), shell_executor()]
 
 class OSType(Enum):
     WINDOWS = "windows"
@@ -81,7 +84,8 @@ class ModelTools():
         return llm_with_tools
 
 class AgentState(TypedDict):
-    messages: Annotated[list, add_messages, "the agent messages"]
+    messages: Annotated[list, add_messages]
+    # messages: Annotated[list, add_messages, "all the agent messages"]
     user_input: Annotated[str, "the user input information"]
     tasks: Annotated[list, "the generated task list according to the Human Message"]
     tools_name: Annotated[list, "the name of each hack tool will be used according to the corresponding task"]
@@ -93,7 +97,7 @@ class AgentState(TypedDict):
     pass
 
 class PlannerOuputSchema(TypedDict):
-    messages: Annotated[str, "the chat response"]
+    # messages: Annotated[str, "the PlannerAgent thought process"]
     tasks: Annotated[list, "the list stored all tasks"]
     pass
 
@@ -139,12 +143,18 @@ class Agent():
             llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=PlannerOuputSchema)
             response = llm_with_tools.invoke(messages)
             print(f"\n{Fore.GREEN}planner ---> {response}{Style.RESET_ALL}")
+            # print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
+
+            new_message = [messages, response]
+
             if tasks := response['tasks']:
                 return Command(
                     goto="executor", 
                     update={
                         "tasks": tasks,
-                        "messages": [AIMessage(content=f"go to executor agent")]
+                        "messages": [AIMessage(
+                            content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
+                        )],
                     },
                 )
             return Command(goto=END)
@@ -169,19 +179,33 @@ class Agent():
             llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=PlannerOuputSchema)
             response = llm_with_tools.invoke(messages)
             print(f"\n{Fore.GREEN}planner ---> {response}{Style.RESET_ALL}")
+            # print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
+
+            new_message = [messages, response]
+
             if tasks := response['tasks']:
                 return Command(
                     goto="executor",
                     update={
                         "tasks": tasks,
-                        "messages": [AIMessage(content=f"go to executor agent")]
+                        "messages": [AIMessage(
+                            content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
+                        )],
                     },
                 )
             return Command(goto=END)
 
         # End the loop(planner, executor, summarizer), 
         # try to generate the report
-        return Command(goto="reporter")
+        print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
+        return Command(
+            goto="reporter",
+            update={
+                "messages": [AIMessage(
+                    content=f"PlannerAgent: just go to ReporterAgent"
+                )],
+            },
+        )
 
     # def executor(state: AgentState) -> Command[Literal["tools", "summarizer"]]:
     # def executor(state: AgentState) -> Command[Literal["human_reviewer", "summarizer"]]:
@@ -204,12 +228,18 @@ class Agent():
         llm_with_tools = ModelTools._get_llm_with_tools().with_structured_output(schema=ExecutorOutputSchema)
         response = llm_with_tools.invoke(messages)
         print(f"\n{Fore.YELLOW}executor ---> {response}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}executor ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
+
+        new_message = [messages, response]
+
         return Command(
             goto="human_reviewer",
             update={
                 "tools_name": response["tools_name"],
                 "commands": response["commands"],
-                "messages": [AIMessage(content=f"go to human_reviewer")]
+                "messages": [AIMessage(
+                    content=f"ExecutorAgent: {new_message}, then go to HumanReviewerAgent"
+                )],
             },
         )
         # return Command(
@@ -252,9 +282,11 @@ class Agent():
         return Command(
             goto="summarizer",
             update={
-                    "command_results": messages,
-                    # "failure_flag": response_2["failure_flag"],
-                    "messages": [AIMessage(content=f"go to executor")]
+                "command_results": messages,
+                # "failure_flag": response_2["failure_flag"],
+                "messages": [AIMessage(
+                    content=f"ToolsAgent: {messages}, then go to SummarizerAgent"
+                )],
             },
         )
 
@@ -272,19 +304,42 @@ class Agent():
         response = llm_with_tools.invoke(messages)
         print(f"\n{Fore.BLUE}summarizer ---> {response}{Style.RESET_ALL}")
         print(f"{Fore.BLUE}summarizer ---> {response["failure_flag"]}{Style.RESET_ALL}")
+
+        new_message = [messages, response]
+
         return Command(
             goto="planner",
             update={
                 "summary": response["summary"],
-                "failure_flag": response["failure_flag"]
+                "failure_flag": response["failure_flag"],
+                "messages": [AIMessage(
+                    content=f"SummarizerAgent: {new_message}, then go to PlannerAgent"
+                )],
             }
         )
 
     def reporter(state: AgentState) -> Command[Literal[END]]:
-        print("\nreporter ---> ...")
-        return Command(
-            goto=END
+        REPORTER_SYSTEM_PROMPT: Final = SystemMessage(content=f"""
+        You are a reporter for generating report in the end of penetration testing processes,
+        Your duty is to generate a concise report on the complete penetration testing processes and results.
+
+        The complete penetration testing processes and results: {state["messages"]},
+        that includes four agents' processing procedures: 
+        PlannerAgent, ExecutorAgent, ToolsAgent, and SummarizerAgent.
+
+        Notes: 
+        1.The generated report only concisely shows each agent’s process and the call sequence.
+        """
         )
+
+        print(f"\n{Fore.MAGENTA}reporter ---> state['messages']: \
+        {state["messages"]}{Style.RESET_ALL}")
+
+        messages = [REPORTER_SYSTEM_PROMPT]
+        llm_with_tools = ModelTools._get_llm_with_tools()
+        response = llm_with_tools.invoke(messages)
+        print(f"{Fore.MAGENTA}reporter ---> {response}{Style.RESET_ALL}")
+        return Command(goto=END)
 
     def human_reviewer(state: AgentState) -> Command[Literal["executor", "tools"]]:
         while True:
