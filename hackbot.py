@@ -145,16 +145,17 @@ class Agent():
             print(f"\n{Fore.GREEN}planner ---> {response}{Style.RESET_ALL}")
             # print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
 
-            new_message = [messages, response]
+            new_message = f"PlannerAgent: {[messages, response]}, then go to ExecutorAgent"
 
             if tasks := response['tasks']:
                 return Command(
                     goto="executor", 
                     update={
                         "tasks": tasks,
-                        "messages": [AIMessage(
-                            content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
-                        )],
+                        "messages": new_message,
+                        # "messages": [AIMessage(
+                        #     content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
+                        # )],
                     },
                 )
             return Command(goto=END)
@@ -181,16 +182,18 @@ class Agent():
             print(f"\n{Fore.GREEN}planner ---> {response}{Style.RESET_ALL}")
             # print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
 
-            new_message = [messages, response]
+            # new_message = [messages, response]
+            new_message = f"PlannerAgent: {[messages, response]}, then go to ExecutorAgent"
 
             if tasks := response['tasks']:
                 return Command(
                     goto="executor",
                     update={
                         "tasks": tasks,
-                        "messages": [AIMessage(
-                            content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
-                        )],
+                        "messages": new_message,
+                        # "messages": [AIMessage(
+                        #     content=f"PlannerAgent: {new_message}, then go to ExecutorAgent"
+                        # )],
                     },
                 )
             return Command(goto=END)
@@ -198,12 +201,14 @@ class Agent():
         # End the loop(planner, executor, summarizer), 
         # try to generate the report
         print(f"{Fore.GREEN}planner ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
+        new_message = f"PlannerAgent: just go to ReporterAgent"
         return Command(
             goto="reporter",
             update={
-                "messages": [AIMessage(
-                    content=f"PlannerAgent: just go to ReporterAgent"
-                )],
+                "messages": new_message
+                # "messages": [AIMessage(
+                #     content=f"PlannerAgent: just go to ReporterAgent"
+                # )],
             },
         )
 
@@ -230,16 +235,18 @@ class Agent():
         print(f"\n{Fore.YELLOW}executor ---> {response}{Style.RESET_ALL}")
         print(f"{Fore.GREEN}executor ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
 
-        new_message = [messages, response]
+        # new_message = [messages, response]
+        new_message = f"ExecutorAgent: {[messages, response]}, then go to HumanReviewerAgent"
 
         return Command(
             goto="human_reviewer",
             update={
                 "tools_name": response["tools_name"],
                 "commands": response["commands"],
-                "messages": [AIMessage(
-                    content=f"ExecutorAgent: {new_message}, then go to HumanReviewerAgent"
-                )],
+                "messages": new_message,
+                # "messages": [AIMessage(
+                #     content=f"ExecutorAgent: {new_message}, then go to HumanReviewerAgent"
+                # )],
             },
         )
         # return Command(
@@ -279,14 +286,17 @@ class Agent():
         # response_2 = llm_with_tools_2.invoke(messages)
         # print(f"{Fore.RED}[tools]failure_flag ---> {response_2["failure_flag"]}{Style.RESET_ALL}")
 
+        new_message = f"ToolsAgent: {[messages]}, then go to SummarizerAgent"
+
         return Command(
             goto="summarizer",
             update={
                 "command_results": messages,
+                "messages": new_message,
                 # "failure_flag": response_2["failure_flag"],
-                "messages": [AIMessage(
-                    content=f"ToolsAgent: {messages}, then go to SummarizerAgent"
-                )],
+                # "messages": [AIMessage(
+                #     content=f"ToolsAgent: {messages}, then go to SummarizerAgent"
+                # )],
             },
         )
 
@@ -305,16 +315,18 @@ class Agent():
         print(f"\n{Fore.BLUE}summarizer ---> {response}{Style.RESET_ALL}")
         print(f"{Fore.BLUE}summarizer ---> {response["failure_flag"]}{Style.RESET_ALL}")
 
-        new_message = [messages, response]
+        # new_message = [messages, response]
+        new_message = f"SummarizerAgent: {[messages, response]}, then go to PlannerAgent"
 
         return Command(
             goto="planner",
             update={
                 "summary": response["summary"],
                 "failure_flag": response["failure_flag"],
-                "messages": [AIMessage(
-                    content=f"SummarizerAgent: {new_message}, then go to PlannerAgent"
-                )],
+                "messages": new_message,
+                # "messages": [AIMessage(
+                #     content=f"SummarizerAgent: {new_message}, then go to PlannerAgent"
+                # )],
             }
         )
 
@@ -332,8 +344,7 @@ class Agent():
         """
         )
 
-        print(f"\n{Fore.MAGENTA}reporter ---> state['messages']: \
-        {state["messages"]}{Style.RESET_ALL}")
+        print(f"\n{Fore.MAGENTA}reporter ---> state['messages']: {state["messages"]}{Style.RESET_ALL}")
 
         messages = [REPORTER_SYSTEM_PROMPT]
         llm_with_tools = ModelTools._get_llm_with_tools()
