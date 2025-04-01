@@ -6,16 +6,62 @@
 # Paper: https://arxiv.org/abs/2403.14403                       #
 #################################################################
 
+#######
+# LLM #
+#######
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from typing import Annotated, Sequence, Literal, Union, Final
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+class ModelTools():
+    DEFAULT_MODEL: Final = "openai"
+    MODEL_TEMPERATURE: Final = 0
+    OPENAI_MODEL_NAME: Final = "gpt-4o" # or gpt-4o-mini
+    OPENAI_EMBEDDING_MODEL_NAME: Final = "text-embedding-3-large"
+    OPENAI_API_KEY: Final = os.getenv("OPENAI_API_KEY")
+    OPENAI_BASE_URL: Final = os.getenv("OPENAI_BASE_URL")
+
+    @staticmethod
+    def get_llm(
+        model_name: str = DEFAULT_MODEL, 
+        with_tools: bool = False
+    ) -> Union[ChatOpenAI]:
+        if model_name == "openai":
+            llm = ChatOpenAI(
+                model_name=ModelTools.OPENAI_MODEL_NAME,
+                temperature=ModelTools.MODEL_TEMPERATURE,
+                openai_api_key=ModelTools.OPENAI_API_KEY,
+                base_url=ModelTools.OPENAI_BASE_URL,
+            )
+        else:
+            raise ValueError(f"Model {model_name} not found")
+        if with_tools:
+            llm = llm.bind_tools(tools)
+        return llm
+
+    @staticmethod
+    def get_embed(model_name: str = DEFAULT_MODEL) -> Union[OpenAIEmbeddings]:
+        if model_name == "openai":
+            embd = OpenAIEmbeddings(
+                 model=ModelTools.OPENAI_EMBEDDING_MODEL_NAME,
+                 openai_api_key=ModelTools.OPENAI_API_KEY,
+                 base_url=ModelTools.OPENAI_BASE_URL,
+            )
+        return embd
+
 ################
 # Create Index #
 ################
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
 
 # Set embeddings
-embd = OpenAIEmbeddings()
+# embd = OpenAIEmbeddings()
+embd = ModelTools.get_embed()
 
 # Docs to index
 urls = [
@@ -47,7 +93,6 @@ retriever = vectorstore.as_retriever()
 #######################
 from typing import Literal
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 # Data model
@@ -59,10 +104,11 @@ class RouteQuery(BaseModel):
     )
 
 # LLM with function call
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o-mini",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 structured_llm_router = llm.with_structured_output(RouteQuery)
 
 # Prompt
@@ -81,7 +127,6 @@ question_router = route_prompt | structured_llm_router
 print(question_router.invoke({"question": "Who will the Bears draft first in the NFL draft?"}))
 print(question_router.invoke({"question": "What are the types of agent memory?"}))
 
-
 ############################
 # LLMs 2: Retrieval Grader #
 ############################
@@ -93,10 +138,11 @@ class GradeDocuments(BaseModel):
     )
 
 # LLM with function call
-llm = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 structured_llm_grader = llm.with_structured_output(GradeDocuments)
 
 # Prompt
@@ -135,10 +181,11 @@ Answer:
 """
 prompt = hub.pull("rlm/rag-prompt")
 # LLM
-llm = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 # Post-processing
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
@@ -159,10 +206,11 @@ class GradeHallucinations(BaseModel):
     )
 
 # LLM with function call
-llm = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 structured_llm_grader = llm.with_structured_output(GradeHallucinations)
 
 # Prompt
@@ -192,10 +240,11 @@ class GradeAnswer(BaseModel):
     )
 
 # LLM with function call
-llm = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 structured_llm_grader = llm.with_structured_output(GradeAnswer)
 
 # Prompt
@@ -216,10 +265,11 @@ answer_grader.invoke({"question": question, "generation": generation})
 # LLMs 6: Question Re-writer #
 ##############################
 # LLM
-llm = ChatOpenAI(
-    model="gpt-4o",
-    temperature=0,
-)
+# llm = ChatOpenAI(
+#     model="gpt-4o",
+#     temperature=0,
+# )
+llm = ModelTools.get_llm()
 # Prompt
 system = """
 You a question re-writer that converts an input question to a better version that is optimized \n
@@ -390,6 +440,7 @@ def grade_generation_v_documents_and_question(state: GraphState):
 # Compile Graph #
 #################
 from langgraph.graph import END, StateGraph, START
+from IPython.display import Image, display
 
 workflow = StateGraph(GraphState)
 
@@ -431,11 +482,9 @@ workflow.add_conditional_edges(
 )
 
 # Compile
-app = workflow.compile()
-
+graph = workflow.compile()
 
 # Draw graph
-from IPython.display import Image, display
 try:
     display(Image(graph.get_graph().draw_mermaid_png()))
 except:
