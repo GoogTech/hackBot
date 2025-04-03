@@ -1,0 +1,15 @@
+{
+    "graphs": {
+      "adaptive_rag": "adaptive_rag:graph"
+    },
+    "dependencies": [
+      "langgraph",
+      "langchain-openai",
+      "langchain-community",
+      "langchain",
+      "langchain-text-splitters",
+      "pydantic",
+      "typing-extensions",
+      "python-dotenv"
+    ]
+}
