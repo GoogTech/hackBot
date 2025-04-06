@@ -1,6 +1,7 @@
 {
     "graphs": {
-      "adaptive_rag": "adaptive_rag:graph"
+      "adaptive_rag": "adaptive_rag:graph",
+      "deep_research": "deep_research:graph"
     },
     "python_version": "3.13",
     "env": "./.env",
