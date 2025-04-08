@@ -76,6 +76,7 @@ class SearchQueries(BaseModel):
 class AgentState(TypedDict):
     topic: str # Report topic
     search_queries: list[SearchQuery] # List of search queries
+    feedback_on_search_queries: str # Feedback on the search queries
     search_results: list[dict] # List of search results
     pass
 
@@ -99,6 +100,13 @@ def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
     3. Make the queries specific enough to find high-quality, relevant sources about the topic
     </Task>
 
+    <Feedback>
+    Here is feedback on the search queries from human reivew,
+    If the feedback value is not None, please regenerate the search queries according to the feedback.
+    
+    The feedback value: {feedback}
+    </Feedback>
+
     <Format>
     Call the Queries tool 
     </Format>
@@ -109,24 +117,46 @@ def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
     NUMBER_OF_QUERIES = 2
 
     topic = state["topic"]
+    feedback = state.get("feedback_on_search_queries", None)
+
     llm = ModelTools.get_llm()
     structured_llm = llm.with_structured_output(SearchQueries)
-    SYSTEM_PROMPT = SYSTEM_PROMPT.format(topic=topic, number_of_queries=NUMBER_OF_QUERIES)
+    SYSTEM_PROMPT = SYSTEM_PROMPT.format(topic=topic, number_of_queries=NUMBER_OF_QUERIES, feedback=feedback)
     results = structured_llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=USER_PROMPT),
     ])
-    print(f"Generated search queries: {results.search_queries}")
+
     return Command(
         update={"search_queries": results.search_queries},
         goto="human_feedback",
     )
 
 def human_feedback(state: AgentState) -> Command[Literal["generate_queries", "web_search"]]:
-    # TODO: Implement human feedback mechanism
-    return Command(
-        goto="web_search",
-    )
+    """Get human feedback on the search queries, and route to next steps"""
+    topic = state["topic"]
+    search_queries = state["search_queries"]
+    interrupt_message = f"""
+    Please provide feedback on the following generated search queries:
+    \n\n{search_queries}\n\n
+    Dodes the report plan meet your need?\n
+    Pass 'true' to approve the generated search queries.\n
+    Or, Provide feedback to regenerate the search queries:
+    """
+    
+    feedback = interrupt(value=interrupt_message)
+    # If the user approves the generated search queries, kick off web search
+    if isinstance(feedback, bool) and feedback is True:
+        return Command(goto="web_search")
+    # If the user provides feedback, regenerate the search queries
+    elif isinstance(feedback, str):
+        return Command(
+            update={"feedback_on_search_queries": feedback},
+            goto="generate_queries"
+        )
+    # Catch the exception
+    else:
+        raise TypeError(f"Interrput value of type {type(feedback)} is not supported.")
 
 async def web_search(state: AgentState) -> Command[Literal["evaluate"]]:
     """Execute web search using the generated queries"""
