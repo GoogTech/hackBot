@@ -10,6 +10,7 @@ import os
 from langchain_core.messages import HumanMessage, SystemMessage
 from tavily import AsyncTavilyClient
 import asyncio
+import tiktoken
 
 load_dotenv()
 
@@ -48,6 +49,57 @@ class ModelTools():
                  base_url=ModelTools.OPENAI_BASE_URL,
             )
         return embd
+
+    @staticmethod
+    def get_token_count(text: str, model_name: str = OPENAI_MODEL_NAME) -> int:
+        encoding = tiktoken.encoding_for_model(model_name=model_name)
+        tokens = encoding.encode(text=text)
+        token_count = len(obj=tokens)
+        return token_count
+
+def format_search_results(
+    search_results: List[dict], 
+    max_tokens_per_result: int = 4000,
+    include_raw_content: bool = True,
+    ) -> str:
+    """
+    Format the search results into a readable string,
+    and limits the raw_content to approximately "max_tokens_per_result" tokens.
+
+    Args:
+        search_results: List of search response dicts, each containing:
+        - query: str
+        - results: List of dicts with fields:
+            - title: str
+            - url:  str
+            - content: str
+            - score: float
+            - raw_content: str | None
+    """
+    # Collect all results
+    results_list = []
+    for search_result in search_results:
+        results_list.extend(search_result['results'])
+    # Deduplicate by URL
+    unique_results = {result['url']: result for result in results_list}
+    # Format output
+    formatted_text = ""
+    for _, result in enumerate(unique_results.values(), start=1):
+        formatted_text += f"{'=' * 80}\n"
+        formatted_text += f"Title: {result['title']}\n"
+        formatted_text += f"{'-' * 80}\n"
+        formatted_text += f"URL: {result['url']}\n"
+        formatted_text += f"Most relevant content: {result['content']}\n"
+        if include_raw_content:
+            raw_content = sources.get("raw_content", None)
+            if raw_content is None:
+                raw_content = ''
+                print(f"Warning: Not found the raw_content in {result['url']}")
+            if ModelTools.get_token_count(raw_content) > max_tokens_per_result:
+                raw_content = raw_content[:max_tokens_per_result] + "...[truncated]"
+            formatted_text += f"The Full result raw_content: {raw_content}\n"
+        formatted_text += f"{'=' * 80}\n\n"
+    return formatted_text.strip()
 
 async def execute_search(query_list: List[str]) -> List[dict]:
     """Execute the web search operation"""
