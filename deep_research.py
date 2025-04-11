@@ -60,7 +60,7 @@ class ModelTools():
 def format_search_results(
     search_results: List[dict], 
     max_tokens_per_result: int = 4000,
-    include_raw_content: bool = True,
+    include_raw_content: bool = False,
     ) -> str:
     """
     Format the search results into a readable string,
@@ -215,16 +215,69 @@ async def web_search(state: AgentState) -> Command[Literal["evaluate"]]:
     search_queries = state["search_queries"]
     query_list = [query.search_query for query in search_queries]
     search_results = await execute_search(query_list=query_list)
+    search_results_str = format_search_results(search_results=search_results)
     return Command(
-        update={"search_results": search_results},
+        update={"search_results": search_results_str},
         goto="evaluate",
     )
 
 def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
-    """Evaluates the quality of the search results, 
-    trigger more research if quality fails."""
-    # TODO: Implement evaluation logic
-    print(f"Evaluating search results: {state['search_results']}")
+    """
+    Evaluates the quality of the search results, 
+    trigger more research if quality fails.
+    """
+    # Write the section of the report
+    # ----------------------------------------------
+    # Section 1(SearchQuery 1)
+    #   - SectionContent 1(Come from search_results)
+    # Section 2(SearchQuery 2)
+    #   - SectionContent 2(Come from search_results)
+    # ----------------------------------------------
+    search_queries = state["search_queries"]
+    search_results = state["search_results"]
+    section_writer_instructions = """
+    Write the sections of a research report.
+
+    <Section Titles>
+    {search_queries}
+    </Section Titles>
+
+    <Source Material>
+    {search_results}
+    </Source Material>
+
+    <Task>
+    1. Get all of the section titles carefully from the Section Titles.
+    2. Look at the provided Source Material.
+    3. Decide which sources you will use to write each report section.
+    4. Write each report section based on the Source Material until all sections are completed.
+    </Task>
+
+    <Writing Guidelines>
+    - If existing section content is not populated, write from scratch
+    - If existing section content is populated, synthesize it with the source material
+    - Strict 150-200 word limit
+    - Use simple, clear language
+    - Use short paragraphs (2-3 sentences max)
+    - Use ## for section title (Markdown format)
+    </Writing Guidelines>
+
+    <Citation Rules>
+    - Assign each unique URL a single citation number in your text
+    - End with ### Sources that lists each source with corresponding numbers
+    - IMPORTANT: Number sources sequentially without gaps (1,2,3...) in the final list
+    - Example format:
+      [1] Source Title: URL
+      [2] Source Title: URL
+    </Citation Rules>
+
+    <Final Check>
+    1. Verify that the content of each section is grounded in the provided Source Material.
+    2. Confirm that each URL appears only once in the Source list.
+    3. Verify that sources are numbered sequentially (1, 2, 3…) without any gaps.
+    </Final Check>
+    """
+
     return Command(
         goto="summary",
     )
