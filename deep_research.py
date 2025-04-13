@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 import operator
 from langgraph.types import interrupt, Command
 from langgraph.graph import START, END, StateGraph
+from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from IPython.display import Image, display
 from dotenv import load_dotenv
@@ -13,6 +14,10 @@ import asyncio
 import tiktoken
 
 load_dotenv()
+
+class Configuration:
+    NUMBER_OF_QUERIES: int = 2 # Number of search queries to generate per iteration
+    MAX_SEARCH_DEPTH: int = 2 # Maximum number of search iterations
 
 class ModelTools():
     DEFAULT_MODEL: Final = "openai"
@@ -84,7 +89,7 @@ def format_search_results(
     unique_results = {result['url']: result for result in results_list}
     # Format output
     formatted_text = ""
-    for _, result in enumerate(unique_results.values(), start=1):
+    for _, result in enumerate(unique_results.values()):
         formatted_text += f"{'=' * 80}\n"
         formatted_text += f"Title: {result['title']}\n"
         formatted_text += f"{'-' * 80}\n"
@@ -125,18 +130,30 @@ class SearchQueries(BaseModel):
     search_queries: List[SearchQuery] = Field(description="List of search queries")
     pass
 
+class EvaluationFeedback(BaseModel):
+    grade: Literal["pass", "fail"] = Field(
+        description="Evaluation result indicating whether the response meets requirements('pass') or need revision('fail')"
+    )
+    follow_up_queries: List[SearchQuery] = Field(
+        description="List of follow-up search queries"
+    )
+
 class AgentState(TypedDict):
     topic: str # Report topic
     search_queries: list[SearchQuery] # List of search queries
+    # search_queries: Annotated[list[SearchQuery], add_messages] # List of search queries
     feedback_on_search_queries: str # Feedback on the search queries
-    search_results: list[dict] # List of search results
+    # search_results: list[dict] # List of search results
+    search_results: Annotated[list[dict], add_messages] # List of search results
+    search_iterations: int # The number of search iterations
+    sections_and_contents: str # The content of the sections is part of the research report
     pass
 
 def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
     """Generate search queries based on the topic"""
     SYSTEM_PROMPT = """
     You are an expert technical writer crafting targeted web search queries 
-    that will gather comprehensive information for writing the final summary report about topic.
+    that will gather comprehensive information for writing the final report about topic.
 
     <Report topic>
     {topic}
@@ -166,14 +183,17 @@ def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
     USER_PROMPT = """
     Generate search queries on the provided topic.
     """
-    NUMBER_OF_QUERIES = 2
 
     topic = state["topic"]
     feedback = state.get("feedback_on_search_queries", None)
 
     llm = ModelTools.get_llm()
     structured_llm = llm.with_structured_output(SearchQueries)
-    SYSTEM_PROMPT = SYSTEM_PROMPT.format(topic=topic, number_of_queries=NUMBER_OF_QUERIES, feedback=feedback)
+    SYSTEM_PROMPT = SYSTEM_PROMPT.format(
+        topic=topic, 
+        number_of_queries=Configuration.NUMBER_OF_QUERIES, 
+        feedback=feedback
+    )
     results = structured_llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=USER_PROMPT),
@@ -199,7 +219,10 @@ def human_feedback(state: AgentState) -> Command[Literal["generate_queries", "we
     feedback = interrupt(value=interrupt_message)
     # If the user approves the generated search queries, kick off web search
     if isinstance(feedback, bool) and feedback is True:
-        return Command(goto="web_search")
+        return Command(
+            update={"search_iterations": 0},
+            goto="web_search"
+        )
     # If the user provides feedback, regenerate the search queries
     elif isinstance(feedback, str):
         return Command(
@@ -213,11 +236,16 @@ def human_feedback(state: AgentState) -> Command[Literal["generate_queries", "we
 async def web_search(state: AgentState) -> Command[Literal["evaluate"]]:
     """Execute web search using the generated queries"""
     search_queries = state["search_queries"]
+
     query_list = [query.search_query for query in search_queries]
+    # Keep only the newest search queries, which have never been searched!!!
+    # Notice that the newest search queries are used to gather missing information for sections of the research report
+    # query_list = query_list[int(f"-{Configuration.NUMBER_OF_QUERIES}"):]
+
     search_results = await execute_search(query_list=query_list)
     search_results_str = format_search_results(search_results=search_results)
     return Command(
-        update={"search_results": search_results_str},
+        update={"search_results": search_results_str, "search_iterations": state["search_iterations"] + 1},
         goto="evaluate",
     )
 
@@ -226,14 +254,20 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
     Evaluates the quality of the search results, 
     trigger more research if quality fails.
     """
-    # Write the section of the report
+    # 1.Write the sections of a research report
     # ----------------------------------------------
     # Section 1(SearchQuery 1)
     #   - SectionContent 1(Come from search_results)
     # Section 2(SearchQuery 2)
     #   - SectionContent 2(Come from search_results)
     # ----------------------------------------------
+    #
     search_queries = state["search_queries"]
+    # search_queries = [query.search_query for query in search_queries]
+    ## Keep only the oldest search queries, which were searched first!!!
+    ## Note that the oldest search queries serve as the section titles of the research report
+    # search_queries = search_queries[:int(f"{Configuration.NUMBER_OF_QUERIES}")]
+
     search_results = state["search_results"]
     section_writer_instructions = """
     Write the sections of a research report.
@@ -264,7 +298,7 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
 
     <Citation Rules>
     - Assign each unique URL a single citation number in your text
-    - End with ### Sources that lists each source with corresponding numbers
+    - End with ## Sources that lists each source with corresponding numbers
     - IMPORTANT: Number sources sequentially without gaps (1,2,3...) in the final list
     - Example format:
       [1] Source Title: URL
@@ -277,10 +311,65 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
     3. Verify that sources are numbered sequentially (1, 2, 3…) without any gaps.
     </Final Check>
     """
+    section_writer_inputs = """
+    Write the sections of a research report based on the provided Section Titles and Source Material.
+    """
 
-    return Command(
-        goto="summary",
+    llm = ModelTools.get_llm()
+    print(f"--->debug: before")
+    section_writer_instructions_formatted = section_writer_instructions.format(
+        search_queries=search_queries,
+        search_results=search_results,
     )
+    print(f"--->debug: after")
+    sections_and_contents = llm.invoke([
+        SystemMessage(content=section_writer_instructions_formatted),
+        HumanMessage(content=section_writer_inputs),
+    ])
+
+    # 2.Grade the sections of the research report, 
+    # and consider follow-up questions for missing information if necessary.
+    section_grader_instructions = """
+    Review the content of the section in relation to its title.
+
+    <The titles and contents of the sections>
+    {sections_and_contents}
+    </The titles and contents of the sections>
+
+    <task>
+    Evaluate whether the content of section adequately addressses its title.
+    If the content of section doesn't adequately address its title,
+    generate {number_of_follow_up_queries} follow-up search queries to gather missing information.
+    </task>
+    """
+    section_grader_message = """
+    Evaluate whether the content of section adequately addressses its title,
+    and consider follow-up questions for missing information if necessary.
+    If the grade is 'pass', return None for the follow-up queries,
+    else provide specific search queries to gather missing information.
+    """
+    section_grader_instructions_formatted = section_grader_instructions.format(
+        sections_and_contents=sections_and_contents.content,
+        number_of_follow_up_queries=Configuration.NUMBER_OF_QUERIES,
+    )
+    structured_llm = llm.with_structured_output(EvaluationFeedback)
+    evaluation_feedback = structured_llm.invoke([
+        SystemMessage(content=section_grader_instructions_formatted),
+        HumanMessage(content=section_grader_message),
+    ])
+
+    # The sections are passing or the max search depth is reached
+    if evaluation_feedback.grade == "pass" or state["search_iterations"] >= Configuration.MAX_SEARCH_DEPTH:
+        return Command(
+            update={"sections_and_contents": sections_and_contents.content},
+            goto="summary",
+        )
+    # Update search queries
+    else:
+        return Command(
+            update={"search_queries": evaluation_feedback.follow_up_queries},
+            goto="web_search",
+        )
 
 def summary(state: AgentState) -> Command[Literal[END]]:
     # TODO: Implement summary generation
