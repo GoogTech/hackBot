@@ -90,11 +90,10 @@ def format_search_results(
     # Format output
     formatted_text = ""
     for _, result in enumerate(unique_results.values()):
-        formatted_text += f"{'=' * 80}\n"
-        formatted_text += f"Title: {result['title']}\n"
-        formatted_text += f"{'-' * 80}\n"
-        formatted_text += f"URL: {result['url']}\n"
-        formatted_text += f"Most relevant content: {result['content']}\n"
+        formatted_text += f"{'-' * 120}\n "
+        formatted_text += f"TITLE: {result['title']}\n "
+        formatted_text += f"URL: {result['url']}\n "
+        formatted_text += f"MOST RELEVANT CONTENT: {result['content']}\n "
         if include_raw_content:
             raw_content = sources.get("raw_content", None)
             if raw_content is None:
@@ -102,8 +101,8 @@ def format_search_results(
                 print(f"Warning: Not found the raw_content in {result['url']}")
             if ModelTools.get_token_count(raw_content) > max_tokens_per_result:
                 raw_content = raw_content[:max_tokens_per_result] + "...[truncated]"
-            formatted_text += f"The Full result raw_content: {raw_content}\n"
-        formatted_text += f"{'=' * 80}\n\n"
+            formatted_text += f"The Full result raw_content: {raw_content}\n "
+        formatted_text += f"{'-' * 120}\n\n "
     return formatted_text.strip()
 
 async def execute_search(query_list: List[str]) -> List[dict]:
@@ -141,10 +140,9 @@ class EvaluationFeedback(BaseModel):
 class AgentState(TypedDict):
     topic: str # Report topic
     search_queries: list[SearchQuery] # List of search queries
-    # search_queries: Annotated[list[SearchQuery], add_messages] # List of search queries
+    section_titles: list[str] # Section titles of the research report
     feedback_on_search_queries: str # Feedback on the search queries
-    # search_results: list[dict] # List of search results
-    search_results: Annotated[list[dict], add_messages] # List of search results
+    search_results: Annotated[list[str], add_messages] # List of search results
     search_iterations: int # The number of search iterations
     sections_and_contents: str # The content of the sections is part of the research report
     pass
@@ -200,7 +198,10 @@ def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
     ])
 
     return Command(
-        update={"search_queries": results.search_queries},
+        update={
+            "search_queries": results.search_queries, 
+            "section_titles": results.search_queries
+        },
         goto="human_feedback",
     )
 
@@ -236,16 +237,13 @@ def human_feedback(state: AgentState) -> Command[Literal["generate_queries", "we
 async def web_search(state: AgentState) -> Command[Literal["evaluate"]]:
     """Execute web search using the generated queries"""
     search_queries = state["search_queries"]
-
     query_list = [query.search_query for query in search_queries]
-    # Keep only the newest search queries, which have never been searched!!!
-    # Notice that the newest search queries are used to gather missing information for sections of the research report
-    # query_list = query_list[int(f"-{Configuration.NUMBER_OF_QUERIES}"):]
-
     search_results = await execute_search(query_list=query_list)
     search_results_str = format_search_results(search_results=search_results)
     return Command(
-        update={"search_results": search_results_str, "search_iterations": state["search_iterations"] + 1},
+        update={
+            "search_results": search_results_str, 
+            "search_iterations": state["search_iterations"] + 1},
         goto="evaluate",
     )
 
@@ -256,24 +254,18 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
     """
     # 1.Write the sections of a research report
     # ----------------------------------------------
-    # Section 1(SearchQuery 1)
+    # Section Title 1(SearchQuery 1)
     #   - SectionContent 1(Come from search_results)
-    # Section 2(SearchQuery 2)
+    # Section Title 2(SearchQuery 2)
     #   - SectionContent 2(Come from search_results)
     # ----------------------------------------------
-    #
-    search_queries = state["search_queries"]
-    # search_queries = [query.search_query for query in search_queries]
-    ## Keep only the oldest search queries, which were searched first!!!
-    ## Note that the oldest search queries serve as the section titles of the research report
-    # search_queries = search_queries[:int(f"{Configuration.NUMBER_OF_QUERIES}")]
-
+    section_titles = state["section_titles"]
     search_results = state["search_results"]
     section_writer_instructions = """
     Write the sections of a research report.
 
     <Section Titles>
-    {search_queries}
+    {section_titles}
     </Section Titles>
 
     <Source Material>
@@ -282,14 +274,15 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
 
     <Task>
     1. Get all of the section titles carefully from the Section Titles.
-    2. Look at the provided Source Material.
-    3. Decide which sources you will use to write each report section.
+    2. Look at the provided Source Material, It includes many chunks of information scraped from the web, 
+       and each chunk contains the keywords “TITLE”, “URL”, and “MOST RELEVANT CONTENT”.
+    3. Decide which chunks you will use to write each report section.
     4. Write each report section based on the Source Material until all sections are completed.
     </Task>
 
     <Writing Guidelines>
     - If existing section content is not populated, write from scratch
-    - If existing section content is populated, synthesize it with the source material
+    - If existing section content is populated, synthesize it with the Source Material
     - Strict 150-200 word limit
     - Use simple, clear language
     - Use short paragraphs (2-3 sentences max)
@@ -316,12 +309,10 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
     """
 
     llm = ModelTools.get_llm()
-    print(f"--->debug: before")
     section_writer_instructions_formatted = section_writer_instructions.format(
-        search_queries=search_queries,
-        search_results=search_results,
+        section_titles=section_titles,
+        search_results=search_results
     )
-    print(f"--->debug: after")
     sections_and_contents = llm.invoke([
         SystemMessage(content=section_writer_instructions_formatted),
         HumanMessage(content=section_writer_inputs),
