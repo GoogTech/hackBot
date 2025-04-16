@@ -145,6 +145,7 @@ class AgentState(TypedDict):
     search_results: Annotated[list[str], add_messages] # List of search results
     search_iterations: int # The number of search iterations
     sections_and_contents: str # The content of the sections is part of the research report
+    full_report_content: str # The full report content
     pass
 
 def generate_queries(state: AgentState) -> Command[Literal["human_feedback"]]:
@@ -363,21 +364,134 @@ def evaluate(state: AgentState) -> Command[Literal["web_search", "summary"]]:
         )
 
 def summary(state: AgentState) -> Command[Literal[END]]:
-    # TODO: Implement summary generation
-    DEFAULT_REPORT_STRUCTURE = """
-    Use this structure to create a report on the user-provided topic:
-    1. Introduction
-    - Brief overview of the topic area
-
-    2. Main Body
-    - Summarize the information that focus on the user-provided topic
-    
-    3. Conclusion
-    - Aim for 1 structural element (either a list of table) that distills the main body 
-    - Provide a concise summary of the report
     """
+    Write sections that don't require research using completed sections as context.
+    This node handles sections like "Introduction" or "Conclusion" that build on the
+    completed sections rather than requiring direct research.
+    """
+    summary_writer_instructions = """
+    You are an expert technical writer crafting the remaining sections of the report based on the available report content.
+    
+    <Report Topic>
+    {topic}
+    </Report Topic>
+
+    <Available Report Content>
+    {sections_and_contents}
+    </Available Report Content>
+
+    <Task>
+    1. Section-Specific Approach:
+
+    For Report Title
+    - Use # for report title (Markdown format)
+    - The topic is used as the report title
+
+    For Introduction:
+    - Use ## For section title (Markdown format)
+    - 50-100 word limit
+    - Write in simple and clear language
+    - Focus on the core motivation for the report in 1-2 paragraphs
+    - Use a clear narrative arc to introduce the report
+    - Include NO structural elements (no lists or tables)
+    - No sources section needed
+
+    For Conclusion/Summary:
+    - Use ## for section title (Markdown format)
+    - 100-150 word limit
+    - For comparative reports:
+        * Must included a focused comparsion table using Markdown table syntax
+        * Table should distill insights from the report
+        * Keep table entries clear and concise
+    - For non-comparative reports:
+        * Only use ONE structural element if it helps distill the points made in the report:
+        * Either a focused table comparing items present in the report (using Markdown table syntax)
+        * Or a short list using proper Markdown list syntax:
+            - Use `*` or `-` for unordered lists
+            - Use `1.` for ordered lists
+            - Ensure proper indentation and spacing
+    - End with specific next steps or implications
+    - No sources section needed
+
+    2. Writing Approach:
+    - Use concrete details over general statements
+    - Focus on your single most important point
+    - Make every word count
+    </Task>
+
+    <Quality Checks>
+    - For Report Title: # for report title, the topic is used as the report title
+    - For Introduction: 100-150 word limit, ## for section title, no structural elements, no sources section
+    - For Conclusion: 100-150 word limit, ## for section title, only ONE structural element at most, no source section
+    </Quality Checks>
+    """
+    huamn_instructions = """
+    Add the remaining sections of the report based on the available report content.
+    """
+    # Get state
+    topic = state["topic"]
+    sections_and_contents = state["sections_and_contents"]
+    # Format system instructions
+    system_instructions = summary_writer_instructions.format(
+        topic=topic,
+        sections_and_contents=sections_and_contents,
+    )
+    # Generate the section of ## Introduction and ## Conclusion
+    llm = ModelTools.get_llm()
+    new_sections = llm.invoke([
+        SystemMessage(content=system_instructions),
+        HumanMessage(content=huamn_instructions)
+    ])
+    new_sections = new_sections.content
+    # TODO: Combine the original sections with the new sections
+    system_instructions = """
+    You are an expert technical editor, and your duty is to combine the original sections with the new sections.
+
+    <Original Sections>
+    {original_sections}
+    </Original Sections>
+
+    <New Sections>
+    {new_sections}
+    </New Sections>
+
+    <Task>
+    1.Add the new sections to the original ones and combine them into the full report.
+    2.Adjust the sequence of the sections, such as the section of sources should be the last one.
+
+    An example of the full report structure:
+    ```md
+    # Report Title
+    ## Introduction
+    ## Section Title 1
+    ## Section Title 2
+    ## Section Title X
+    ## Conclusion
+    ## Sources
+    ```
+    </Task>
+
+    <Quality Checks>
+    1.Whether the full report includes all sections from both the new and original ones.
+    2.Whether the sequence of the sections is correct.
+    </Quality Checks>
+    """
+    huamn_instructions = """
+    Please combine the original sections with the new sections.
+    """
+    system_instructions_formatted = system_instructions.format(
+        original_sections=sections_and_contents,
+        new_sections=new_sections
+    )
+    full_report_content = llm.invoke([
+        SystemMessage(content=system_instructions_formatted),
+        HumanMessage(content=huamn_instructions)
+    ])
+    full_report_content = full_report_content.content
+    # Write the full report content to state
     return Command(
-        goto=END,
+        update={"full_report_content": full_report_content},
+        goto=END
     )
 
 workflow = StateGraph(state_schema=AgentState)
@@ -388,10 +502,3 @@ workflow.add_node(node="evaluate", action=evaluate)
 workflow.add_node(node="summary", action=summary)
 workflow.add_edge(start_key=START, end_key="generate_queries")
 graph = workflow.compile()
-
-try:
-    display(Image(graph.get_graph().draw_mermaid_png()))
-except (ImportError, OSError) as e:
-    print("Unable to display graph visualization", e)
-except Exception as e:
-    print("An unexpected error occurred while trying to display the graph", e)
