@@ -385,7 +385,7 @@ def summary(state: AgentState) -> Command[Literal[END]]:
 
     For Report Title
     - Use # for report title (Markdown format)
-    - The topic is used as the report title
+    - The topic of the available report content is used as the report title.
 
     For Introduction:
     - Use ## For section title (Markdown format)
@@ -459,8 +459,7 @@ def summary(state: AgentState) -> Command[Literal[END]]:
     1.Add the new sections to the original ones and combine them into the full report.
     2.Adjust the sequence of the sections, such as the section of sources should be the last one.
 
-    An example of the full report structure:
-    ```md
+    An example of the full report structure (Markdown format):
     # Report Title
     ## Introduction
     ## Section Title 1
@@ -468,7 +467,7 @@ def summary(state: AgentState) -> Command[Literal[END]]:
     ## Section Title X
     ## Conclusion
     ## Sources
-    ```
+
     </Task>
 
     <Quality Checks>
