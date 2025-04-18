@@ -456,8 +456,9 @@ def summary(state: AgentState) -> Command[Literal[END]]:
     </New Sections>
 
     <Task>
-    1.Add the new sections to the original ones and combine them into the full report.
-    2.Adjust the sequence of the sections, such as the section of sources should be the last one.
+    1.Add the new sections to the original sections and combine them into the full report.
+    2.Make sure to preserve the format and content of the original sections, including the citation numbers in the text.
+    3.Adjust the sequence of the sections, such as the section of sources should be the last one.
 
     An example of the full report structure (Markdown format):
     # Report Title
