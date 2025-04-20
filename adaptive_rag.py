@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import os
 from typing import Literal
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.types import interrupt, Command
 from pydantic import BaseModel, Field
 from langchain import hub
 from langchain_core.output_parsers import StrOutputParser
@@ -23,6 +24,7 @@ from langchain_community.vectorstores import Chroma
 from langgraph.graph import END, StateGraph, START
 from IPython.display import Image, display
 from langchain.schema import Document
+import time
 
 load_dotenv()
 
@@ -91,7 +93,13 @@ vectorstore = Chroma.from_documents(
     collection_name="rag-chroma",
     embedding=embd,
 )
-retriever = vectorstore.as_retriever()
+
+retriever = vectorstore.as_retriever(
+    # Fixed the bug: It always retrieves all the data from the VectorStore, even if they might not be relevant to the question.
+    # Solution: Only retrieve documents that have a relevance score above a certain threshold
+    search_type="similarity_score_threshold",
+    search_kwargs={'score_threshold': 0.8}
+)
 
 #######################################
 # Web Search Tool: Question Re-writer #
@@ -112,17 +120,39 @@ class GraphState(TypedDict):
     question: str
     generation: str
     documents: List[str]
+    # Set a retrieval count to avoid going into an endless loop among the nodes:
+    # Retrieve, grade_documents and transform_query
+    retrieval_count: int
 
 #####################
 # Define Graph Flow #
 #####################
-def retrieve(state: GraphState):
+# BUG:
+# It's will go to death loop among the nodes: Retrieve, grade_documents and transform_query, 
+# if the question includes some specified keywords that appears in the system prompt of route_question node,
+# such as the question: "what's the agent, and how the build it with langgraph?"
+# SOLUTION: 
+# 1.Add the huamn_feedback node, and build the relationship with the transform_query node
+# 2.Limit the retrieval count, define the max_retrieval_count
+# 3.If max_retrieval_count: go END, else: continue to loop
+def retrieve(state: GraphState) -> Command[Literal["grade_documents", END]]:
     """Retrieve documents"""
     print(f"retrieve ————>")
+    MAX_RETRIEVAL_COUNT = 2 # the max retrieval count
     question = state["question"]
-    # Retrieval
-    documents = retriever.invoke(question)
-    return {"documents": documents, "question": question}
+    retrieval_count = state["retrieval_count"]
+    # Judge the retrieval_count
+    if retrieval_count >= MAX_RETRIEVAL_COUNT:
+        return Command(goto=END)
+    else:
+        # Retrieval
+        documents = retriever.invoke(question)
+        print(f"Retrieve Node ---> documents: {documents}")
+        # return {"documents": documents, "question": question}
+        return Command(
+            update={"documents": documents, "question": question, "retrieval_count": retrieval_count + 1}, 
+            goto="transform_query"
+        )
 
 class GradeDocuments(BaseModel):
     """Binary score for relevance check on retrieved documents"""
@@ -149,6 +179,7 @@ def grade_documents(state: GraphState):
     print(f"grade_documents ————>")
     question = state["question"]
     documents = state["documents"] # TODO: bug here: KeyError('documents')
+    print(f"GradeDocuments Node ---> documents: {documents}")
     # Score each doc
     filtered_docs = []
     for d in documents:
@@ -206,7 +237,33 @@ def transform_query(state: GraphState):
     documents = state["documents"]
     # Re-write question
     better_question = question_rewriter.invoke({"question": question})
-    return {"documents": documents, "question": better_question}
+    return {"documents": documents, "question": better_question} # Go the human_feedback node
+
+# TODO
+def human_feedback(state: AgentState) -> Command[Literal["transform_query", "retrieve"]]:
+    new_question = state["question"]
+    interrupt_message = f"""
+    Please provide feedback on the following generated question:
+    \n\n{new_question}\n\n
+    Dodes the new question meet your need?\n
+    Pass 'true' to approve the generated question.\n
+    Or, Provide feedback to regenerate the question:
+    """
+    feedback = interrupt(value=interrupt_message)
+    # If the user approves the generated question, kick off the retrieval process
+    if isinstance(feedback, bool) and feedback is True:
+        return Command(
+            goto="retrieve"
+        )
+    # If the user provides feedback, regenerate the question
+    elif isinstance(feedback, str):
+        return Command(
+            update={"feedback_on_question": feedback},
+            goto="transform_query"
+        )
+    # Catch the exception
+    else:
+        raise TypeError(f"Interrput value of type {type(feedback)} is not supported.")
 
 def web_search(state):
     """Web search based on the re-phrased question"""
@@ -214,7 +271,13 @@ def web_search(state):
     question = state["question"]
     # Web search
     docs = web_search_tool.invoke({"query": question})
-    web_results = "\n".join([d["content"] for d in docs])
+    contents = []
+    for d in docs:
+        if isinstance(d, str): # Fixed the TypeError: string indices must be integers, not 'str'
+            contents.append(d)
+        elif "content" in d:
+            contents.append(d["content"])
+    web_results = "\n".join(contents)
     web_results = Document(page_content=web_results)
     return {"documents": web_results, "question": question}
 
@@ -228,7 +291,7 @@ class RouteQuery(BaseModel):
         description="Given a user question choose to route it to web search or a vectorstore."
     )
 
-def route_question(state: GraphState):
+def route_question(state: GraphState) -> Command[Literal["web_search", "retrieve"]]:
     system = """
     You are an expert at routing a user question to a vectorstore or web search.
     The vectorstore contains documents related to agents, prompt engineering, and adversarial attacks.
@@ -244,14 +307,17 @@ def route_question(state: GraphState):
 
     """Route question to web search or RAG"""
     print(f"route_question ————>")
+    retrieval_count = 1 # init the retrieval count
     question = state["question"]
     source = question_router.invoke({"question": question})
     if source.datasource == "web_search":
         print(f"route_question ————> go to web search")
-        return "web_search"
+        # return "web_search"
+        return Command(goto="web_search")
     elif source.datasource == "vectorstore":
         print(f"route_question ————> go to RAG")
-        return "vectorstore"
+        # return "vectorstore"
+        return Command(update={"retrieval_count": retrieval_count}, goto="retrieve")
 
 def decide_to_generate(state: GraphState):
     """Determines whether to generate an answer, or re-generate a question"""
@@ -354,6 +420,7 @@ def grade_generation_v_documents_and_question(state: GraphState):
 workflow = StateGraph(GraphState)
 
 # Define the nodes
+workflow.add_node("route_question", route_question)
 workflow.add_node("retrieve", retrieve)
 workflow.add_node("grade_documents", grade_documents)
 workflow.add_node("generate", generate)
@@ -361,16 +428,17 @@ workflow.add_node("transform_query", transform_query)
 workflow.add_node("web_search", web_search)
 
 # Build graph
-workflow.add_conditional_edges(
-    START,
-    route_question,
-    {
-        "web_search": "web_search",
-        "vectorstore": "retrieve",
-    }
-)
+workflow.add_edge(START, "route_question")
+# workflow.add_conditional_edges(
+#     START,
+#     route_question,
+#     {
+#         "web_search": "web_search",
+#         "vectorstore": "retrieve",
+#     }
+# )
 workflow.add_edge("web_search", "generate")
-workflow.add_edge("retrieve", "grade_documents")
+# workflow.add_edge("retrieve", "grade_documents")
 workflow.add_conditional_edges(
     "grade_documents",
     decide_to_generate,
@@ -379,7 +447,7 @@ workflow.add_conditional_edges(
         "transform_query": "transform_query",
     }
 )
-workflow.add_edge("transform_query", "retrieve")
+workflow.add_edge("transform_query", "human_feedback")
 workflow.add_conditional_edges(
     "generate",
     grade_generation_v_documents_and_question,
