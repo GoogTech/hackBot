@@ -240,12 +240,12 @@ def transform_query(state: GraphState):
     return {"documents": documents, "question": better_question} # Go the human_feedback node
 
 # TODO
-def human_feedback(state: AgentState) -> Command[Literal["transform_query", "retrieve"]]:
+def human_feedback(state: GraphState) -> Command[Literal["transform_query", "retrieve"]]:
     new_question = state["question"]
     interrupt_message = f"""
     Please provide feedback on the following generated question:
     \n\n{new_question}\n\n
-    Dodes the new question meet your need?\n
+    Dodes the generated question meet your need?\n
     Pass 'true' to approve the generated question.\n
     Or, Provide feedback to regenerate the question:
     """
@@ -421,11 +421,12 @@ workflow = StateGraph(GraphState)
 
 # Define the nodes
 workflow.add_node("route_question", route_question)
+workflow.add_node("web_search", web_search)
 workflow.add_node("retrieve", retrieve)
 workflow.add_node("grade_documents", grade_documents)
 workflow.add_node("generate", generate)
 workflow.add_node("transform_query", transform_query)
-workflow.add_node("web_search", web_search)
+workflow.add_node("human_feedback", human_feedback)
 
 # Build graph
 workflow.add_edge(START, "route_question")
