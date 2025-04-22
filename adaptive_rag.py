@@ -224,7 +224,7 @@ def generate(state: GraphState):
 def transform_query(state: GraphState):
     system = """
     You a question re-writer that converts an input question to a better version that is optimized \n
-    for vectorstore retrieval. Look at the input question and try to reason about the underlying semantic intent / meaning.
+    for vectorstore retrieval. Look at the input and try to reason about the underlying semantic intent / meaning.
 
     <Feedback>
     Here is feedback on the generated question from human review,
