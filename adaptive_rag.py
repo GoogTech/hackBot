@@ -123,6 +123,8 @@ class GraphState(TypedDict):
     # Set a retrieval count to avoid going into an endless loop among the nodes:
     # Retrieve, grade_documents and transform_query
     retrieval_count: int
+    # Feedback on the generated question
+    feedback_on_question: str
 
 #####################
 # Define Graph Flow #
@@ -222,8 +224,17 @@ def generate(state: GraphState):
 def transform_query(state: GraphState):
     system = """
     You a question re-writer that converts an input question to a better version that is optimized \n
-    for vectorstore retrieval. Look at the input and try to reason about the underlying semantic intent / meaning.
+    for vectorstore retrieval. Look at the input question and try to reason about the underlying semantic intent / meaning.
+
+    <Feedback>
+    Here is feedback on the generated question from human review,
+    If the feedback value is not None, please regenerate the question according to the feedback.
+    The feedback value: {feedback}
+    </Feedback>
     """
+    feedback = state.get("feedback_on_question", None)
+    system = system.format(feedback=feedback)
+
     re_write_prompt = ChatPromptTemplate.from_messages([
         ("system", system),
         ("human", "Here is the initial question: \n\n {question} \n Formulate an improved question.")
@@ -234,10 +245,10 @@ def transform_query(state: GraphState):
     """Transform the query to produce a better question"""
     print(f"transform_query ————>")
     question = state["question"]
-    documents = state["documents"]
+    documents = state["documents"] # TODO: Delete the unnecessary code
     # Re-write question
     better_question = question_rewriter.invoke({"question": question})
-    return {"documents": documents, "question": better_question} # Go the human_feedback node
+    return {"documents": documents, "question": better_question} # Always go the human_feedback node
 
 # TODO
 def human_feedback(state: GraphState) -> Command[Literal["transform_query", "retrieve"]]:
